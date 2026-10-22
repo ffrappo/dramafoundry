@@ -6,6 +6,7 @@ Preserve its environment, gateway, web container and all persistent data.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -50,20 +51,35 @@ def main() -> None:
             pending.write_bytes(wanted)
             os.replace(pending, destination)
         digests[name] = digest
-    # The hosted extraction module contains earlier translations not yet on
-    # upstream main. Reconcile only this repair, preserving those owned bytes.
+    # Preserve hosted translations outside the repaired producer definitions.
     extraction_path = 'src/novelvideo/structured_extraction.py'
     extraction = ROOT / 'dramafoundry' / extraction_path
-    extraction_source = extraction.read_text()
-    anchor = '    succeeded = [outcome for outcome in outcomes if outcome is not None]\n'
-    guard = ('    if failures and not succeeded and not replayed:\n'
-             '        # A provider/auth failure for every chunk is not an empty cast.\n'
-             '        raise failures[0][1]\n')
-    if extraction_source.count(anchor) != 1:
-        raise RuntimeError('Hosted extraction repair location changed')
-    if anchor + guard not in extraction_source:
-        extraction_source = extraction_source.replace(anchor, anchor + guard, 1)
-        compile(extraction_source, str(extraction), 'exec')
+    original = extraction.read_text()
+    canonical = (release / extraction_path).read_text()
+    old_lines, new_lines = original.splitlines(keepends=True), canonical.splitlines(keepends=True)
+    old_nodes = {node.name: node for node in ast.parse(original).body if hasattr(node, 'name')}
+    new_nodes = {node.name: node for node in ast.parse(canonical).body if hasattr(node, 'name')}
+    patches = []
+    for name in ['validate_character_chunk_output', '_create_character_extraction_agent', 'extract_characters_from_chunks']:
+        wanted = new_nodes[name]
+        replacement = ''.join(new_lines[wanted.lineno - 1:wanted.end_lineno])
+        current = old_nodes.get(name)
+        if current is None:
+            if name != 'validate_character_chunk_output':
+                raise RuntimeError(f'Hosted extraction definition missing: {name}')
+            insertion = old_nodes['_create_character_extraction_agent'].lineno - 1
+            patches.append((insertion, insertion, replacement + '\n\n'))
+        else:
+            patches.append((current.lineno - 1, current.end_lineno, replacement))
+    for class_name, field in [('CharacterCandidate', 'evidence'), ('ChunkCharacterOutput', 'characters')]:
+        current = next(node for node in old_nodes[class_name].body if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == field)
+        wanted = next(node for node in new_nodes[class_name].body if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == field)
+        patches.append((current.lineno - 1, current.end_lineno, ''.join(new_lines[wanted.lineno - 1:wanted.end_lineno])))
+    for start, end, replacement in sorted(patches, reverse=True):
+        old_lines[start:end] = [replacement]
+    extraction_source = ''.join(old_lines)
+    compile(extraction_source, str(extraction), 'exec')
+    if extraction_source != original:
         pending = extraction.with_suffix('.release')
         pending.write_text(extraction_source)
         os.replace(pending, extraction)

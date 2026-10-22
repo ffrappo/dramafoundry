@@ -97,16 +97,16 @@ def _enforce_agent_request_boundary(request: Request, user: dict) -> None:
     """Central guard for agent sessions on legacy routes.
 
     Route-level ``require_scope`` is still preferred because it gives precise
-    business intent. This guard prevents gaps while existing routes are migrated:
-    an agent cannot access a different project than its server-assigned scope,
-    and it cannot perform unsafe writes without a write scope.
+    business intent. Project-scoped agent sessions stay within their assigned
+    project. Installer-issued team credentials retain team-wide project access.
+    Both credential classes need a write scope for unsafe requests.
     """
 
     if user.get("credential_kind") not in {"agent_session", "team_agent"}:
         return
 
     match = PROJECT_PATH_RE.search(request.url.path)
-    if match:
+    if match and user.get("credential_kind") == "agent_session":
         requested_project = unquote(match.group(1))
         current_kind = str(user.get("current_scope_kind") or "home")
         current_project = user.get("current_project_id")

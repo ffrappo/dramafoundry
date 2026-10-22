@@ -213,7 +213,8 @@ class NoOpUsageMeter:
         return None
 
     async def get_user_credit_balance(self, user_id: str) -> int | None:
-        return 0
+        # CE has no wallet or credit ceiling. None is not an empty balance.
+        return None
 
     async def bump_content_counter(
         self,

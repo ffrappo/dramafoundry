@@ -430,6 +430,9 @@ async def extract_characters_from_chunks(
             await _maybe_await(on_chunk_failed(chunk, exc))
 
     succeeded = [outcome for outcome in outcomes if outcome is not None]
+    if failures and not succeeded and not replayed:
+        # A provider/auth failure for every chunk is not an empty cast.
+        raise failures[0][1]
     log(f"片段抽取完成: {len(succeeded)}/{len(chunks)} 成功")
 
     # Replayed chunks merge alongside fresh ones, so a resumed build produces

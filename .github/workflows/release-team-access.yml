@@ -4,6 +4,10 @@ on:
     branches: [main]
     paths:
       - src/novelvideo/api/auth.py
+      - src/novelvideo/api/routes/auth.py
+      - src/novelvideo/ports/local/usage.py
+      - src/novelvideo/structured_extraction.py
+      - scripts/reconcile-team-credits.py
       - scripts/release-team-access.py
       - .github/workflows/release-team-access.yml
   workflow_dispatch:
@@ -34,4 +38,4 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $key -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/dramafoundry-ssh/known_hosts"
           target="/opt/dramafoundry/releases/$GITHUB_SHA"
           $GIT_SSH_COMMAND root@49.12.9.255 "install -d -m 700 '$target'"
-          git archive HEAD src/novelvideo/api/auth.py scripts/release-team-access.py | $GIT_SSH_COMMAND root@49.12.9.255 "tar -xf - -C '$target' && cd '$target' && python3 scripts/release-team-access.py '$GITHUB_SHA'"
+          git archive HEAD src/novelvideo/api/auth.py src/novelvideo/api/routes/auth.py src/novelvideo/ports/local/usage.py src/novelvideo/structured_extraction.py scripts/reconcile-team-credits.py scripts/release-team-access.py | $GIT_SSH_COMMAND root@49.12.9.255 "tar -xf - -C '$target' && cd '$target' && python3 scripts/release-team-access.py '$GITHUB_SHA'"

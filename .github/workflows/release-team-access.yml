@@ -1,0 +1,37 @@
+name: Release team API access
+on:
+  push:
+    branches: [main]
+    paths:
+      - src/novelvideo/api/auth.py
+      - scripts/release-team-access.py
+      - .github/workflows/release-team-access.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: dramafoundry-production
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - name: Reconcile the hosted API from merged main
+        env:
+          DEPLOY_KEY: ${{ secrets.DRAMAFOUNDRY_DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"
+          install -d -m 700 "$RUNNER_TEMP/dramafoundry-ssh"
+          key="$RUNNER_TEMP/dramafoundry-ssh/key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          printf '%s\n' '49.12.9.255 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINYgEzwXLHhXkFwTgTcoGiWzZ6pIaZiBJ+y8Ovp7NBno' > "$RUNNER_TEMP/dramafoundry-ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/dramafoundry-ssh/known_hosts"
+          target="/opt/dramafoundry/releases/$GITHUB_SHA"
+          $GIT_SSH_COMMAND root@49.12.9.255 "install -d -m 700 '$target'"
+          git archive HEAD src/novelvideo/api/auth.py scripts/release-team-access.py | $GIT_SSH_COMMAND root@49.12.9.255 "tar -xf - -C '$target' && cd '$target' && python3 scripts/release-team-access.py '$GITHUB_SHA'"

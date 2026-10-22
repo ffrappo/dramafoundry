@@ -117,7 +117,7 @@ export function CreditBalanceBadge() {
               CREDIT_VALUE_CLASS,
             )}
           >
-            {isLoading || balance === undefined ? "--" : formatFullCredits(balance, language)}
+            {isLoading || balance == null ? "--" : formatFullCredits(balance, language)}
           </span>
         </PopoverTrigger>
         <PopoverContent
@@ -152,7 +152,7 @@ export function CreditBalanceBadge() {
             <div className="mt-3 flex items-center gap-1.5">
               <CreditSparkIcon className="size-5" />
               <span className="text-2xl font-semibold tabular-nums">
-                {balance === undefined ? "--" : formatFullCredits(balance, language)}
+                {balance == null ? "--" : formatFullCredits(balance, language)}
               </span>
             </div>
           </div>

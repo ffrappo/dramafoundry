@@ -13,6 +13,7 @@ from novelvideo.api.auth import (
 )
 from novelvideo.ports import get_auth_port
 from novelvideo.ports.auth_contract import AuthError
+from novelvideo.ports.local.usage import NoOpUsageMeter
 from novelvideo.ports.local.team_auth import (
     TeamPassphraseAuthPort,
     team_provisioning_secret,
@@ -81,7 +82,8 @@ async def login(request: Request):
             "data": {
                 "username": user.username,
                 "role": user.role,
-                "credit_balance": 0,
+                "credit_balance": None,
+                "credit_unlimited": True,
                 "credential_kind": "browser_session",
             },
         }
@@ -158,13 +160,14 @@ async def logout(request: Request):
 
 @router.get("/auth/me")
 async def me(user: dict = Depends(get_api_user)):
-    credit_balance = 0
-    user_id = str(user.get("user_id") or user.get("id") or "").strip()
-    if user_id:
-        from novelvideo.ports.registry import get_port
+    from novelvideo.ports.registry import get_port
 
-        balance = await get_port("usage_meter").get_user_credit_balance(user_id)
-        credit_balance = balance if balance is not None else 0
+    usage_meter = get_port("usage_meter")
+    credit_unlimited = isinstance(usage_meter, NoOpUsageMeter)
+    user_id = str(user.get("user_id") or user.get("id") or "").strip()
+    credit_balance = (
+        await usage_meter.get_user_credit_balance(user_id) if user_id else None
+    )
 
     return JSONResponse(
         {
@@ -173,6 +176,7 @@ async def me(user: dict = Depends(get_api_user)):
                 "username": user["username"],
                 "role": user["role"],
                 "credit_balance": credit_balance,
+                "credit_unlimited": credit_unlimited,
                 "credential_kind": user.get("credential_kind") or "user",
                 "current_scope_kind": user.get("current_scope_kind"),
                 "current_project_id": user.get("current_project_id"),

@@ -10,7 +10,8 @@ import { verifyOtp, type OtpLoginResult } from "@/lib/auth-api";
 export interface CurrentUser {
   username: string;
   role: string;
-  credit_balance: number;
+  credit_balance: number | null;
+  credit_unlimited?: boolean;
   credential_kind?: string;
   avatar_url?: string | null;
 }

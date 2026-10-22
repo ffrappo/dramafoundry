@@ -18,8 +18,11 @@ import urllib.error
 import urllib.request
 
 ROOT = Path('/opt/dramafoundry')
-AUTH = Path('src/novelvideo/api/auth.py')
-BASE_SOURCE_SHA256 = '60b398bc9241ac90fd995eca34fc5afc21ce4ce8162f0521fb0383c94049e3c1'
+SOURCES = {
+    '93a01e1e7a622cfe1fb7afcfadb2fcb2ab98805dfe4c58fe71d0ff5ed533f85e': 'src/novelvideo/api/auth.py',
+    '1431bc8432a434c6411188d5c1d42368c42f0d1401a5f16103ddadd516db2a09': 'src/novelvideo/api/routes/auth.py',
+    '75a7f17e0c16677f88eb93ef86eb917662f2c5439e35ce73123ca1ed95d85678': 'src/novelvideo/ports/local/usage.py',
+}
 
 
 def run(*args: str) -> None:
@@ -33,17 +36,38 @@ def main() -> None:
     release = ROOT / 'releases' / revision
     if Path.cwd().resolve() != release:
         raise RuntimeError('Unexpected release directory')
-    source, destination = release / AUTH, ROOT / 'dramafoundry' / AUTH
-    wanted = source.read_bytes()
-    compile(wanted, str(source), 'exec')
-    digest = hashlib.sha256(wanted).hexdigest()
-    current = hashlib.sha256(destination.read_bytes()).hexdigest()
-    if current not in {BASE_SOURCE_SHA256, digest}:
-        raise RuntimeError('Hosted authentication source changed; preserve it')
-    if current != digest:
-        pending = destination.with_suffix('.release')
-        pending.write_bytes(wanted)
-        os.replace(pending, destination)
+    digests = {}
+    for base_digest, name in SOURCES.items():
+        source, destination = release / name, ROOT / 'dramafoundry' / name
+        wanted = source.read_bytes()
+        compile(wanted, str(source), 'exec')
+        digest = hashlib.sha256(wanted).hexdigest()
+        current = hashlib.sha256(destination.read_bytes()).hexdigest()
+        if current not in {base_digest, digest}:
+            raise RuntimeError(f'Hosted source changed; preserve {name}')
+        if current != digest:
+            pending = destination.with_suffix('.release')
+            pending.write_bytes(wanted)
+            os.replace(pending, destination)
+        digests[name] = digest
+    # The hosted extraction module contains earlier translations not yet on
+    # upstream main. Reconcile only this repair, preserving those owned bytes.
+    extraction_path = 'src/novelvideo/structured_extraction.py'
+    extraction = ROOT / 'dramafoundry' / extraction_path
+    extraction_source = extraction.read_text()
+    anchor = '    succeeded = [outcome for outcome in outcomes if outcome is not None]\n'
+    guard = ('    if failures and not succeeded and not replayed:\n'
+             '        # A provider/auth failure for every chunk is not an empty cast.\n'
+             '        raise failures[0][1]\n')
+    if extraction_source.count(anchor) != 1:
+        raise RuntimeError('Hosted extraction repair location changed')
+    if anchor + guard not in extraction_source:
+        extraction_source = extraction_source.replace(anchor, anchor + guard, 1)
+        compile(extraction_source, str(extraction), 'exec')
+        pending = extraction.with_suffix('.release')
+        pending.write_text(extraction_source)
+        os.replace(pending, extraction)
+    digests[extraction_path] = hashlib.sha256(extraction.read_bytes()).hexdigest()
     voice_module = ROOT / 'dramafoundry/src/novelvideo/api/routes/projects.py'
     voice_source = voice_module.read_text()
     if '-> dict[str, Any]' in voice_source and 'from typing import Any' not in voice_source:
@@ -57,6 +81,7 @@ def main() -> None:
     # Import the real application with production configuration before replacement.
     run(*compose, 'run', '--rm', '--no-deps', '--entrypoint', 'python', 'api', '-c',
         'import novelvideo.api; print("Production API import succeeded")')
+    run(sys.executable, str(release / 'scripts/reconcile-team-credits.py'), revision)
     run(*compose, 'up', '-d', '--no-deps', 'api')
     for _ in range(60):
         try:
@@ -68,11 +93,13 @@ def main() -> None:
             time.sleep(2)
     else:
         raise RuntimeError('Hosted API did not become ready after release')
-    script = "import hashlib,pathlib;print(hashlib.sha256(pathlib.Path('/app/src/novelvideo/api/auth.py').read_bytes()).hexdigest())"
-    actual = subprocess.check_output(['docker', 'exec', 'dramafoundry-api-1', 'python', '-c', script], text=True).strip()
-    if actual != digest:
-        raise RuntimeError('Running API authentication source differs from merged main')
-    receipt = {'commit': revision, 'auth_sha256': digest, 'api': 'dramafoundry-api-1', 'released_at': int(time.time())}
+    script = ('import hashlib,json,pathlib; paths=' + repr(list(digests))
+              + '; print(json.dumps({p:hashlib.sha256((pathlib.Path("/app")/p).read_bytes()).hexdigest() for p in paths}))')
+    actual = json.loads(subprocess.check_output(
+        ['docker', 'exec', 'dramafoundry-api-1', 'python', '-c', script], text=True))
+    if actual != digests:
+        raise RuntimeError('Running API sources differ from merged main')
+    receipt = {'commit': revision, 'source_sha256': digests, 'api': 'dramafoundry-api-1', 'released_at': int(time.time())}
     (ROOT / 'team-access-release.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt))
 

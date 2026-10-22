@@ -101,11 +101,11 @@ class CharacterCandidate(BaseModel):
     )
     gender: str = Field(default="", description="male / female / 空字符串表示未知")
     description: str = Field(default="", description="本片段支持的简短描述")
-    evidence: list[CharacterEvidence] = Field(default_factory=list)
+    evidence: list[CharacterEvidence] = Field(min_length=1)
 
 
 class ChunkCharacterOutput(BaseModel):
-    characters: list[CharacterCandidate] = Field(default_factory=list)
+    characters: list[CharacterCandidate]
 
 
 CHARACTER_EXTRACTION_SYSTEM_PROMPT = """你是剧本/小说的角色抽取器。输入是作品中的一个片段。
@@ -172,11 +172,29 @@ class StructuredOutputFailure(RuntimeError):
     """A structured run failed; ``str()`` carries the diagnosis."""
 
 
-def _create_character_extraction_agent(agent: Any = None):
+def validate_character_chunk_output(
+    output: ChunkCharacterOutput, chunk: SourceChunk
+) -> ChunkCharacterOutput:
+    """Enforce the source contract before accepting or caching model output."""
+    for index, candidate in enumerate(output.characters, start=1):
+        name = normalize_character_name(candidate.name)
+        if not name or not name_is_attested(name, chunk.text):
+            raise ValueError(
+                f"Character {index}: name must be an exact name from this source section. "
+                "Do not put reasoning, instructions or nested JSON inside a name field."
+            )
+        if not any(verify_evidence(item.quote, chunk) is not None for item in candidate.evidence):
+            raise ValueError(
+                f"Character {index}: evidence must include a verbatim quote from this source section."
+            )
+    return output
+
+
+def _create_character_extraction_agent(agent: Any = None, *, source_chunk: SourceChunk | None = None):
     if agent is not None:
         return agent
 
-    from pydantic_ai import Agent
+    from pydantic_ai import Agent, ModelRetry
 
     from novelvideo.config import (
         get_newapi_structured_output_model_settings,
@@ -184,7 +202,7 @@ def _create_character_extraction_agent(agent: Any = None):
     )
     from novelvideo.model_gateway_runtime import model_gateway_output_retries
 
-    return Agent(
+    runner = Agent(
         get_newapi_text_pydantic_model(
             "CHARACTER_BUILD_MODEL",
             "gemini-3-flash-preview",
@@ -196,6 +214,14 @@ def _create_character_extraction_agent(agent: Any = None):
         retries={"output": model_gateway_output_retries(2)},
         name="Structured Character Extractor",
     )
+    if source_chunk is not None:
+        @runner.output_validator
+        def validate_source(output: ChunkCharacterOutput) -> ChunkCharacterOutput:
+            try:
+                return validate_character_chunk_output(output, source_chunk)
+            except ValueError as error:
+                raise ModelRetry(str(error)) from error
+    return runner
 
 
 async def _run_structured(agent: Any, prompt: str) -> Any:
@@ -399,14 +425,15 @@ async def extract_characters_from_chunks(
             )
         return merged, []
 
-    runner = _create_character_extraction_agent(agent)
-
     async def analyse(chunk: SourceChunk) -> tuple[SourceChunk, ChunkCharacterOutput]:
+        # Each chunk owns its source validator and HTTP-client lifetime.
+        runner = _create_character_extraction_agent(agent, source_chunk=chunk)
         output = await _run_structured(
             runner,
             f"{asset_language_instruction(language)}\n\n"
-            f"【片段 {chunk.section_label}】\n{chunk.text}",
+            f"[Section {chunk.section_label}]\n{chunk.text}",
         )
+        validate_character_chunk_output(output, chunk)
         if on_chunk_done:
             await _maybe_await(on_chunk_done(chunk, output))
         return chunk, output
@@ -414,7 +441,7 @@ async def extract_characters_from_chunks(
     failures: list[tuple[SourceChunk, BaseException]] = []
 
     def record_failure(chunk: SourceChunk, exc: BaseException) -> None:
-        log(f"⚠️ 片段 {chunk.section_label} 抽取失败，已跳过: {exc}")
+        log(f"⚠️ Section {chunk.section_label} extraction failed, skipped: {exc}")
         failures.append((chunk, exc))
 
     outcomes = await map_bounded(
@@ -433,11 +460,13 @@ async def extract_characters_from_chunks(
     if failures and not succeeded and not replayed:
         # A provider/auth failure for every chunk is not an empty cast.
         raise failures[0][1]
-    log(f"片段抽取完成: {len(succeeded)}/{len(chunks)} 成功")
+    log(f"Section extraction complete: {len(succeeded)}/{len(chunks)} succeeded")
 
     # Replayed chunks merge alongside fresh ones, so a resumed build produces
     # the same characters as an uninterrupted one.
     merged = merge_character_candidates(replayed + succeeded)
+    if failures and not merged:
+        raise failures[0][1]
     if adjudicate:
         # Rules cannot see across chunks; this can. One call over the candidate
         # set, not another pass over the source.

@@ -44,8 +44,19 @@ def main() -> None:
         pending = destination.with_suffix('.release')
         pending.write_bytes(wanted)
         os.replace(pending, destination)
+    voice_module = ROOT / 'dramafoundry/src/novelvideo/api/routes/projects.py'
+    voice_source = voice_module.read_text()
+    if '-> dict[str, Any]' in voice_source and 'from typing import Any' not in voice_source:
+        voice_source = voice_source.replace('from pathlib import Path\n', 'from pathlib import Path\nfrom typing import Any\n', 1)
+        compile(voice_source, str(voice_module), 'exec')
+        pending = voice_module.with_suffix('.release')
+        pending.write_text(voice_source)
+        os.replace(pending, voice_module)
     compose = ['docker', 'compose', '-f', str(ROOT / 'deploy-compose.yml')]
     run(*compose, 'build', 'api')
+    # Import the real application with production configuration before replacement.
+    run(*compose, 'run', '--rm', '--no-deps', '--entrypoint', 'python', 'api', '-c',
+        'import novelvideo.api; print("Production API import succeeded")')
     run(*compose, 'up', '-d', '--no-deps', 'api')
     for _ in range(60):
         try:
